@@ -1,0 +1,53 @@
+name: Mirror feeds from local-calendars
+
+on:
+  schedule:
+    # 10:30 UTC, half an hour after local-calendars rebuilds its feeds.
+    - cron: "30 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE: https://bytemasterpro.github.io/local-calendars
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy published feeds
+        run: |
+          set -euo pipefail
+          for f in docs/*.ics; do
+            name=$(basename "$f")
+            tmp=$(mktemp)
+            code=$(curl -sS -o "$tmp" -w '%{http_code}' "$SOURCE/$name")
+            if [ "$code" != "200" ]; then
+              echo "::warning::$name: HTTP $code from source, keeping existing copy"
+              continue
+            fi
+            if ! head -1 "$tmp" | grep -q 'BEGIN:VCALENDAR'; then
+              echo "::warning::$name: source did not return a calendar, keeping existing copy"
+              continue
+            fi
+            mv "$tmp" "$f"
+            echo "$name: $(grep -c 'BEGIN:VEVENT' "$f") events"
+          done
+
+      - name: Commit changes
+        run: |
+          git config user.name "mirror bot"
+          git config user.email "mirror-bot@users.noreply.github.com"
+          git add docs
+          if git diff --cached --quiet; then
+            echo "Feeds unchanged"
+          else
+            git commit -m "mirror: $(date -u +%Y-%m-%d)"
+            git push
+          fi
